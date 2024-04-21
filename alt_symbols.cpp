@@ -138,6 +138,28 @@ void saveDigitInfoToCSV(const std::string& filename, const std::vector<std::stri
     outputFile.close();
 }
 
+void saveMatrixToCSV(const std::string& filename, std::vector<std::vector<int>> confusionMatrix){
+  std::ofstream outputFile(filename);
+  
+  if (!outputFile.is_open()) {
+      std::cerr << "Failed to open file: " << filename << std::endl;
+      return;
+  }
+
+  // Écrire les en-têtes de colonne
+  outputFile << "EXPECTED,FIRST" <<std::endl;
+  outputFile << "-1" << "," << "-1" << std::endl;
+  
+  // Écrire les données du premier tableau
+  for (size_t i = 0; i < confusionMatrix.size(); i++) {
+    std::vector<int> line = confusionMatrix[i];
+    outputFile << confusionMatrix[i][0] << "," << confusionMatrix[i][1] << std::endl; 
+  }
+  
+  outputFile.close();
+
+}
+
 void saveToCSV(const std::string& filename, int* stats, int total, std::vector<std::vector<SymbolChoice>>& symbolChoices) {
     std::ofstream outputFile(filename);
 
@@ -201,12 +223,14 @@ int getTotal(const int* stats, int size) {
 /* Fonction principale : scanne l'image et donne les niveaux de confiance pour
    différents caractères */
 int singleImageScan(const char * image_path, std::string lang, bool print_mode,
-  const int expected, const tesseract::PageSegMode psm,std::vector<std::vector<SymbolChoice>>& allSymbolChoices,int& totalDigits, int& positionofExpected)
+  const int expected, const tesseract::PageSegMode psm,std::vector<std::vector<SymbolChoice>>& allSymbolChoices,int& totalDigits, int& positionofExpected, std::vector<int> &confMatrix)
 {
   int test_identifier = OCR_NAN;
   totalDigits=0;
   positionofExpected=-1;
-
+  confMatrix.clear();
+  confMatrix.push_back(expected);
+  
   // Open input image with leptonica library
   Pix *image = pixRead(image_path);
   API->SetImage(image);
@@ -268,6 +292,9 @@ int singleImageScan(const char * image_path, std::string lang, bool print_mode,
               int firstInt = charToInt(j.first);
               if(firstInt != -1) {
                 totalDigits++;
+                
+                if (confMatrix.size() < 2) {confMatrix.push_back(firstInt);}
+
                 if(firstInt == expected && positionofExpected == -1){
                   positionofExpected= option_ID;
                 }
@@ -303,6 +330,9 @@ int singleImageScan(const char * image_path, std::string lang, bool print_mode,
 
   // Destroy image after usage
   pixDestroy(&image);
+  
+  if (confMatrix.size() < 2) {confMatrix.push_back(-1);}
+  
   return test_identifier;
 }
 
@@ -362,6 +392,8 @@ int main(int argc, char* argv[])
   std::vector<int> expectedDigits;
   std::vector<int> totalDigitsList;
   std::vector<int> positions;
+  std::vector<std::vector<int>> confusionMatrix;
+  std::vector<int> confusion;
   bool intPassed = false;
   int positionOfExpectedFound;
 
@@ -405,10 +437,11 @@ int main(int argc, char* argv[])
       while(path_list.good() && i < TEST_CAP) {
         path_list >> current_path;
         
-        int result = singleImageScan(current_path.c_str(), lang, print_mode, labels[i], psm_mode,allSymbolChoices, totalDigits, positionOfExpectedFound);
+        int result = singleImageScan(current_path.c_str(), lang, print_mode, labels[i], psm_mode,allSymbolChoices, totalDigits, positionOfExpectedFound, confusion);
         expectedDigits.push_back(labels[i]);
         imagePaths.push_back(current_path);
         totalDigitsList.push_back(totalDigits);
+        confusionMatrix.push_back(confusion);
 
         positions.push_back(positionOfExpectedFound);
         
@@ -423,7 +456,7 @@ int main(int argc, char* argv[])
     }
   }
   else {
-    int result = singleImageScan(im_path.c_str(), lang, print_mode, labels[0], psm_mode,allSymbolChoices, totalDigits, positionOfExpectedFound);
+    int result = singleImageScan(im_path.c_str(), lang, print_mode, labels[0], psm_mode,allSymbolChoices, totalDigits, positionOfExpectedFound, confusion);
     OCR_result[result]++;
 
   }
@@ -439,11 +472,16 @@ int main(int argc, char* argv[])
 
   /* ######################## MEMORY RELEASE SECTION ######################## */
   std::string csvFilename = "stats.csv";
-    saveToCSV(csvFilename, OCR_result, i,allSymbolChoices);
-    std::cout << "Statistics saved to " << csvFilename << std::endl;
+  saveToCSV(csvFilename, OCR_result, i,allSymbolChoices);
+  std::cout << "Statistics saved to " << csvFilename << std::endl;
+  
   std::string digitInfoCSVFilename  = "digit_data.csv";
   saveDigitInfoToCSV(digitInfoCSVFilename,imagePaths, expectedDigits, totalDigitsList, positions);
   std::cout << "Digit info saved to " << digitInfoCSVFilename << std::endl;
+  
+  std::string confusionCsvFilename = "confMat.csv";
+  saveMatrixToCSV(confusionCsvFilename, confusionMatrix);
+  std::cout << "Confusion matrix csv saved to " << confusionCsvFilename << std::endl;
 
   // Destroy used object and release memory
   API->End();
