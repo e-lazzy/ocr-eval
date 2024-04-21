@@ -3,6 +3,8 @@
 
 
 #include <tuple>
+#include <algorithm>
+#include <variant>
 
 #include <string>
 #include <iostream>
@@ -19,7 +21,7 @@
 #define MIN_ARGS 4
 #define MAX_ARGS 6
 #define DATA_SET_SIZE 60000
-#define TEST_CAP 50 // Pour les tests sur MNIST, permets de caper le nombre de
+#define TEST_CAP 60000 // Pour les tests sur MNIST, permets de caper le nombre de
                     // tests
 
 /* On initialise l'API comme variable globale puisqu'elle n'a besoin d'être
@@ -94,6 +96,48 @@ tesseract::PageSegMode psmSelect(int psm_ID) {
   return psm_list[psm_ID];
 }
 
+
+
+void saveDigitInfoToCSV(const std::string& filename, const std::vector<std::string>& imagePaths, 
+                        const std::vector<int>& expectedDigits, const std::vector<int>& totalDigits, 
+                        const std::vector<int>& positions) {
+    std::ofstream outputFile(filename);
+
+    if (!outputFile.is_open()) {
+        std::cerr << "Failed to open file: " << filename << std::endl;
+        return;
+    }
+
+    // Écrire les en-têtes de colonne
+    outputFile << "ImageNumber,ExpectedValue,InOptions,OptionPosition" << std::endl;
+
+    // Déclarez une variable pour stocker le numéro de l'image
+    int imageNumber = 0;
+
+    // Écrire les données
+    for (size_t i = 0; i < imagePaths.size(); ++i) {
+        // Récupérez les informations nécessaires
+        int expected = expectedDigits[i]; // Valeur attendue pour cette image
+        int total = totalDigits[i]; // Nombre total de chiffres dans l'image
+        int positionOfExpected = positions[i]; // Position de la valeur attendue parmi les options
+
+        // Écrivez les données dans le fichier CSV
+        outputFile << imageNumber << ","; // Numéro de l'image
+        outputFile << expected << ","; // Valeur attendue
+        if (total > 0 && positionOfExpected != -1) {
+            outputFile << "OUI," << positionOfExpected; // Si la valeur est trouvée parmi les options
+        } else {
+            outputFile << "NON,-1"; // Si la valeur n'est pas trouvée parmi les options
+        }
+        outputFile << std::endl;
+
+        // Incrémentez le numéro de l'image
+        imageNumber++;
+    }
+
+    outputFile.close();
+}
+
 void saveToCSV(const std::string& filename, int* stats, int total, std::vector<std::vector<SymbolChoice>>& symbolChoices) {
     std::ofstream outputFile(filename);
 
@@ -157,9 +201,11 @@ int getTotal(const int* stats, int size) {
 /* Fonction principale : scanne l'image et donne les niveaux de confiance pour
    différents caractères */
 int singleImageScan(const char * image_path, std::string lang, bool print_mode,
-  const int expected, const tesseract::PageSegMode psm,std::vector<std::vector<SymbolChoice>>& allSymbolChoices)
+  const int expected, const tesseract::PageSegMode psm,std::vector<std::vector<SymbolChoice>>& allSymbolChoices,int& totalDigits, int& positionofExpected)
 {
   int test_identifier = OCR_NAN;
+  totalDigits=0;
+  positionofExpected=-1;
 
   // Open input image with leptonica library
   Pix *image = pixRead(image_path);
@@ -187,10 +233,12 @@ int singleImageScan(const char * image_path, std::string lang, bool print_mode,
   std::vector<SymbolChoice> symbolChoices;
   if (res_it != 0) {
     int ImageNumber=0;
+    
     do {
       symbolChoices.clear();
       const char* word;
       float conf;
+      int option_ID=0;
       int x1, y1, x2, y2, tcnt = 1, gcnt = 1, wcnt = 0;
       res_it->BoundingBox(level, &x1, &y1, &x2, &y2);
       choiceMap = res_it->GetBestLSTMSymbolChoices();
@@ -206,7 +254,7 @@ int singleImageScan(const char * image_path, std::string lang, bool print_mode,
 
           if (timestep.size() > 0) {
             bool intPassed = false;
-            int option_ID = 1;
+            //int option_ID = 1;
             for (auto & j : timestep) {
               conf = 100.0 * j.second;
               word =  j.first;
@@ -214,12 +262,16 @@ int singleImageScan(const char * image_path, std::string lang, bool print_mode,
               
               if(print_mode) {printf("\toption %d: '%s'  \tprobabilité: %.2f %\n",
                         option_ID, word, conf);}
-              gcnt++;
-              option_ID++;
+              
 
               // Vérification pour la valeur de retour
               int firstInt = charToInt(j.first);
               if(firstInt != -1) {
+                totalDigits++;
+                if(firstInt == expected && positionofExpected == -1){
+                  positionofExpected= option_ID;
+                }
+
                 if(firstInt == expected && !intPassed)
                   {test_identifier = OCR_FIRST; intPassed = true;}
                 else if (firstInt == expected && intPassed)
@@ -227,6 +279,10 @@ int singleImageScan(const char * image_path, std::string lang, bool print_mode,
                 else
                   {intPassed = true;}
               }
+              
+              gcnt++;
+              option_ID++;
+              
             }
             tcnt++;
           }
@@ -301,6 +357,13 @@ int main(int argc, char* argv[])
   std::string im_path = argv[1];
   std::string lb_path = argv[2];
   auto psm_mode = psmSelect(std::stoi(argv[3]));
+  int totalDigits=0;
+  std::vector<std::string>imagePaths;
+  std::vector<int> expectedDigits;
+  std::vector<int> totalDigitsList;
+  std::vector<int> positions;
+  bool intPassed = false;
+  int positionOfExpectedFound;
 
   std::vector<std::vector<SymbolChoice>> allSymbolChoices;
   std::vector<SymbolChoice> symbolChoices;
@@ -341,17 +404,26 @@ int main(int argc, char* argv[])
       std::string current_path;
       while(path_list.good() && i < TEST_CAP) {
         path_list >> current_path;
-        int result = singleImageScan(current_path.c_str(), lang, print_mode, labels[i], psm_mode,allSymbolChoices);
+        
+        int result = singleImageScan(current_path.c_str(), lang, print_mode, labels[i], psm_mode,allSymbolChoices, totalDigits, positionOfExpectedFound);
+        expectedDigits.push_back(labels[i]);
+        imagePaths.push_back(current_path);
+        totalDigitsList.push_back(totalDigits);
+
+        positions.push_back(positionOfExpectedFound);
+        
         OCR_result[result]++;
         i++;
-      }
+        }
+        
+      
     }
     else {
       fprintf(stderr, "Could not open file ''%s'.\n", im_path.c_str());
     }
   }
   else {
-    int result = singleImageScan(im_path.c_str(), lang, print_mode, labels[0], psm_mode,allSymbolChoices);
+    int result = singleImageScan(im_path.c_str(), lang, print_mode, labels[0], psm_mode,allSymbolChoices, totalDigits, positionOfExpectedFound);
     OCR_result[result]++;
 
   }
@@ -369,7 +441,9 @@ int main(int argc, char* argv[])
   std::string csvFilename = "stats.csv";
     saveToCSV(csvFilename, OCR_result, i,allSymbolChoices);
     std::cout << "Statistics saved to " << csvFilename << std::endl;
-
+  std::string digitInfoCSVFilename  = "digit_data.csv";
+  saveDigitInfoToCSV(digitInfoCSVFilename,imagePaths, expectedDigits, totalDigitsList, positions);
+  std::cout << "Digit info saved to " << digitInfoCSVFilename << std::endl;
 
   // Destroy used object and release memory
   API->End();
